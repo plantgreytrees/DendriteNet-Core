@@ -243,6 +243,14 @@ public:
         // Constitutional self-critique: embed_dim = output_dim (same space)
         critique_net.init(output_dim, output_dim, rng);
         critique_enabled = true;
+        // Zero-init critique output layer + positive bias so sigmoid(+2) ≈ 0.88 at start.
+        // He-init produces random scores with min(4 principles) ≈ 0.2 < threshold(0.3),
+        // blocking most outputs before any training and collapsing initial accuracy to ~5%.
+        if (!critique_net.scorer.layers.empty()) {
+            auto& last = critique_net.scorer.layers.back();
+            for (auto& w : last.weights.data) w = 0.0f;
+            for (auto& b : last.bias.data)    b = 2.0f;  // sigmoid(2) ≈ 0.88 > 0.3
+        }
 
         // Initialise default principles from the output space
         init_default_principles(output_dim, rng);

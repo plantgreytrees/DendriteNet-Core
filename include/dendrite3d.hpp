@@ -1,4 +1,5 @@
 #pragma once
+#include "branch.hpp"
 #include "conductor.hpp"
 #include "task_context.hpp"
 #include "morality.hpp"
@@ -14,111 +15,6 @@
 #include <set>
 
 namespace dendrite {
-
-// ============================================================
-// Branch: a specialist sub-tree with its own sub-conductor
-// ============================================================
-struct Branch {
-    int id;
-    std::string domain;
-    MiniNetwork specialist;       // the actual prediction network
-    SubConductor sub_conductor;   // local conductor for feedback
-
-    // Children branches (for nested depth)
-    std::vector<std::shared_ptr<Branch>> children;
-    MiniNetwork child_router;     // routes to children if present
-    bool has_children = false;
-
-    // Statistics
-    size_t visit_count = 0;
-    float running_loss = 0;
-    float running_confidence = 0;
-
-    // Child router forward-pass cache (for backprop)
-    Tensor last_child_probs;
-    int    last_chosen_child = -1;
-
-    // Enhancement #28: Oscillatory phase (Kuramoto model)
-    float phase = 0.0f;         // current phase θ ∈ [0, 2π)
-    float natural_freq = 0.0f;  // intrinsic angular frequency ω
-
-    // Enhancement #27: Hierarchical message passing — per-step context buffers
-    Tensor child_context;      // bottom-up: aggregate of children outputs
-    Tensor conductor_guidance; // top-down: guidance signal from conductor
-
-    // Enhancement #29: Multi-compartment — distal (context) pathway
-    MiniNetwork distal;          // context + cross-talk → modulation vector
-    bool has_distal = false;
-    float distal_coupling = 0.3f;  // how much distal can modulate proximal (±30%)
-    // Cached intermediates for backward pass
-    Tensor last_prox_out;        // proximal (specialist) output before modulation
-    Tensor last_dist_out;        // distal output (tanh-modulation signal)
-
-    size_t param_count() const {
-        size_t t = specialist.param_count() + sub_conductor.param_count();
-        if (has_distal) t += distal.param_count();
-        if (has_children) {
-            t += child_router.param_count();
-            for (auto& c : children) t += c->param_count();
-        }
-        return t;
-    }
-};
-
-using BranchPtr = std::shared_ptr<Branch>;
-
-// ============================================================
-// GrowthController: periodic split/prune decisions for self-adapting topology
-// ============================================================
-struct GrowthController {
-    size_t eval_interval    = 10;
-    float  split_threshold  = 1.5f;
-    float  prune_threshold  = 0.02f;
-    size_t min_visits_to_split = 100;
-    size_t prune_patience   = 3;
-    size_t max_branches     = 12;
-    size_t min_branches     = 2;
-    size_t epochs_evaluated = 0;
-
-    struct BranchHealth {
-        float  avg_loss          = 0.0f;
-        float  visit_ratio       = 0.0f;
-        size_t low_usage_cycles  = 0;
-    };
-    std::vector<BranchHealth> health;
-
-    void init(size_t num_branches) { health.assign(num_branches, BranchHealth{}); }
-
-    struct Decision {
-        std::vector<size_t> to_split;
-        std::vector<size_t> to_prune;
-    };
-
-    Decision evaluate(const std::vector<BranchPtr>& branches, size_t total_samples) {
-        Decision d;
-        epochs_evaluated++;
-        if (eval_interval == 0 || epochs_evaluated % eval_interval != 0) return d;
-        while (health.size() < branches.size()) health.push_back(BranchHealth{});
-        for (size_t b = 0; b < branches.size(); b++) {
-            float visit_ratio = (float)branches[b]->visit_count / std::max(total_samples, (size_t)1);
-            health[b].avg_loss = branches[b]->running_loss;
-            health[b].visit_ratio = visit_ratio;
-            if (!branches[b]->has_children &&
-                branches[b]->running_loss > split_threshold &&
-                branches[b]->visit_count > min_visits_to_split &&
-                branches.size() < max_branches)
-                d.to_split.push_back(b);
-            if (visit_ratio < prune_threshold) {
-                health[b].low_usage_cycles++;
-                if (health[b].low_usage_cycles >= prune_patience && branches.size() > min_branches)
-                    d.to_prune.push_back(b);
-            } else {
-                health[b].low_usage_cycles = 0;
-            }
-        }
-        return d;
-    }
-};
 
 // ============================================================
 // SpecializationMetrics: branch-class activation statistics
@@ -326,6 +222,10 @@ public:
     bool hypernetwork_enabled = false;
     float hypernetwork_meta_weight = 0.01f;  // weight of auxiliary meta-loss
 
+    // Enhancement #25: track whether the last infer() matched any text→concept association.
+    // Cleared at the start of every train_sample() — training has no text input.
+    bool modality_concepts_active = false;
+
     // Stats
     size_t total_inferences = 0;
     size_t total_train_steps = 0;
@@ -463,6 +363,14 @@ public:
                 "distal_" + b->domain,
                 {distal_in, distal_hidden, output_dim},
                 Activation::RELU, Activation::TANH, rng);
+            // Zero-init output layer so tanh(~0) ≈ 0 → near-identity modulation at start.
+            // He init leaves large pre-tanh values (near ±1), adding ±30% random noise
+            // from the first forward pass and suppressing initial accuracy below chance.
+            if (!b->distal.layers.empty()) {
+                auto& last = b->distal.layers.back();
+                for (auto& w : last.weights.data) w *= 0.01f;
+                for (auto& bi : last.bias.data)   bi = 0.0f;
+            }
             b->has_distal = true;
             b->distal_coupling = coupling;
         }
@@ -500,56 +408,9 @@ public:
         conductor = Conductor(input_dim, output_dim, n, summary_dim, attn_dim, top_k, rng);
 
         // Create branches
-        for (size_t i = 0; i < n; i++) {
-            auto branch = std::make_shared<Branch>();
-            branch->id = i;
-            branch->domain = branch_names[i];
-
-            // Specialist network
-            branch->specialist = MiniNetwork(
-                "specialist_" + branch_names[i],
-                {input_dim, (size_t)specialist_hidden, (size_t)specialist_hidden / 2, output_dim},
-                Activation::RELU, Activation::SOFTMAX, rng);
-
-            // Sub-conductor
-            branch->sub_conductor = SubConductor(i, input_dim, summary_dim, n, rng);
-
-            // Enhancement #28: oscillator — distinct natural freq per branch, random init phase
-            branch->natural_freq = 0.5f + 0.15f * static_cast<float>(i);
-            {
-                std::uniform_real_distribution<float> pd(0.0f, 2.0f * 3.14159265f);
-                branch->phase = pd(rng);
-            }
-
-            // Optional sub-branches
-            if (i < sub_branch_names.size() && !sub_branch_names[i].empty()) {
-                branch->has_children = true;
-                size_t num_children = sub_branch_names[i].size();
-
-                branch->child_router = MiniNetwork(
-                    "child_router_" + branch_names[i],
-                    {input_dim, 32, num_children},
-                    Activation::RELU, Activation::SOFTMAX, rng);
-
-                for (size_t c = 0; c < num_children; c++) {
-                    auto child = std::make_shared<Branch>();
-                    child->id = n + i * 10 + c;
-                    child->domain = sub_branch_names[i][c];
-                    child->specialist = MiniNetwork(
-                        "specialist_" + sub_branch_names[i][c],
-                        {input_dim, (size_t)specialist_hidden / 2, output_dim},
-                        Activation::RELU, Activation::SOFTMAX, rng);
-                    child->sub_conductor = SubConductor(child->id, input_dim, summary_dim, num_children, rng);
-                    branch->children.push_back(child);
-                }
-            }
-
-            // Initialize early exit classifier for branch specialist (0.90 threshold).
-            // Child specialists are 2-layer and silently skip init_early_exit.
-            branch->specialist.init_early_exit(output_dim, rng, 0.15f);  // tight entropy ceiling
-
-            branches.push_back(branch);
-        }
+        branches = ModelBuilder::build_branches(
+            branch_names, sub_branch_names,
+            input_dim, output_dim, specialist_hidden, summary_dim, rng);
 
         // Initialise load-balancing bias.
         // Pass 1 (target_usage = 1/num_branches ≈ 0.25 for 4 branches) so each branch
@@ -682,9 +543,13 @@ public:
         std::vector<BranchSignal> signals;
         std::vector<int> active;
 
-        // Enhancement #24: compute Perceiver IO output once for all branches
+        // Enhancement #24: compute Perceiver IO output once for all branches.
+        // Guard: PerceiverIO has no backward() so its weights stay random — applying it
+        // during inference without training adds ~20% random noise to branch outputs.
+        // Only blend when concepts were actually triggered by text (genuine modality context).
         Tensor perceiver_out({output_dim});
-        bool use_perceiver = perceiver_enabled && !modality_embeddings.empty();
+        bool use_perceiver = perceiver_enabled && !modality_embeddings.empty()
+                             && modality_concepts_active;
         if (use_perceiver) perceiver_out = perceiver.forward(modality_embeddings);
 
         for (size_t i = 0; i < branches.size(); i++) {
@@ -695,7 +560,10 @@ public:
                     // Blend Perceiver output into branch output (0.8 branch + 0.2 perceiver)
                     for (size_t d = 0; d < output_dim && d < perceiver_out.size(); d++)
                         branch_outputs[i][d] = 0.8f * branch_outputs[i][d] + 0.2f * perceiver_out[d];
-                } else if (gca_enabled && !modality_embeddings.empty()) {
+                } else if (gca_enabled && !modality_embeddings.empty() && modality_concepts_active) {
+                    // Gate GCA on modality_concepts_active: stub encoders produce random
+                    // embeddings on every call; applying GCA without real modal context
+                    // overwrites branch outputs with random noise.
                     branch_outputs[i] = gated_cross_attn.forward(branch_outputs[i], modality_embeddings);
                 }
             }
@@ -707,7 +575,7 @@ public:
                 if (use_perceiver) {
                     for (size_t d = 0; d < output_dim && d < perceiver_out.size(); d++)
                         branch_outputs[i][d] = 0.8f * branch_outputs[i][d] + 0.2f * perceiver_out[d];
-                } else if (gca_enabled && !modality_embeddings.empty()) {
+                } else if (gca_enabled && !modality_embeddings.empty() && modality_concepts_active) {
                     branch_outputs[i] = gated_cross_attn.forward(branch_outputs[i], modality_embeddings);
                 }
             }
@@ -730,6 +598,7 @@ public:
                 }
             }
         }
+        modality_concepts_active = !result.modalities_activated.empty();
 
         // === Step 3: Cross-talk with GAT enrichment ===
         // First pass: compute raw summaries + GAT keys/values
@@ -1049,6 +918,7 @@ public:
     // Training
     // --------------------------------------------------------
     float train_sample(const Tensor& input, const Tensor& target) {
+        modality_concepts_active = false;  // no text context during batch training
         // Forward pass
         Tensor heat = conductor.compute_heat(input);
         // NaN guard on heat
@@ -1261,9 +1131,11 @@ public:
         }
 
         // Enhancement #25: CLIP contrastive alignment — align highest-heat branch output
-        // with any modality associations activated by the current context items.
+        // with modality associations, but only when text input actually triggered a concept
+        // match (modality_concepts_active). prev_cross_talk is always non-empty after
+        // warmup so was firing every step against a random "cat" embedding — incorrect.
         float clip_loss = 0.0f;
-        if ((image_enabled || audio_enabled) && !prev_cross_talk.empty()) {
+        if ((image_enabled || audio_enabled) && modality_concepts_active) {
             // Use the hottest branch's output as the "text" embedding
             int hot_branch = active[0];
             for (int b : active)

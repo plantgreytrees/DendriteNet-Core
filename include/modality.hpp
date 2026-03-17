@@ -166,13 +166,13 @@ public:
     // Association memory: lookup concept by name
     // Returns shared-space embedding if concept is known
     // --------------------------------------------------------
-    bool has_association(const std::string& concept) const {
-        return associations.count(concept) > 0;
+    bool has_association(const std::string& concept_name) const {
+        return associations.count(concept_name) > 0;
     }
 
-    Tensor lookup(const std::string& concept) {
+    Tensor lookup(const std::string& concept_name) {
         total_lookups++;
-        auto it = associations.find(concept);
+        auto it = associations.find(concept_name);
         if (it != associations.end()) {
             association_hits++;
             return it->second;
@@ -183,20 +183,20 @@ public:
     // --------------------------------------------------------
     // Register an association: bind a concept to an embedding
     // --------------------------------------------------------
-    void register_association(const std::string& concept, const Tensor& raw_input) {
-        associations[concept] = process(raw_input);
+    void register_association(const std::string& concept_name, const Tensor& raw_input) {
+        associations[concept_name] = process(raw_input);
     }
 
-    void register_association_direct(const std::string& concept, const Tensor& shared_embedding) {
-        associations[concept] = shared_embedding;
+    void register_association_direct(const std::string& concept_name, const Tensor& shared_embedding) {
+        associations[concept_name] = shared_embedding;
     }
 
     // --------------------------------------------------------
     // Batch register from concept-data pairs
     // --------------------------------------------------------
     void register_batch(const std::vector<std::pair<std::string, Tensor>>& pairs) {
-        for (auto& [concept, data] : pairs)
-            register_association(concept, data);
+        for (auto& [concept_name, data] : pairs)
+            register_association(concept_name, data);
     }
 
     // --------------------------------------------------------
@@ -206,7 +206,7 @@ public:
         std::string best_concept;
         float best_sim = -1e9f;
 
-        for (auto& [concept, assoc_emb] : associations) {
+        for (auto& [concept_name, assoc_emb] : associations) {
             float dot = 0, na = 0, nb = 0;
             size_t dim = std::min(embedding.size(), assoc_emb.size());
             for (size_t i = 0; i < dim; i++) {
@@ -217,7 +217,7 @@ public:
             float sim = (na > 1e-7f && nb > 1e-7f) ? dot / (std::sqrt(na) * std::sqrt(nb)) : 0;
             if (sim > best_sim) {
                 best_sim = sim;
-                best_concept = concept;
+                best_concept = concept_name;
             }
         }
         if (best_sim_out) *best_sim_out = best_sim;

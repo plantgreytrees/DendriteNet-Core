@@ -1,0 +1,133 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PATH=/c/msys64/mingw64/bin:/c/msys64/usr/bin:/usr/bin /c/msys64/mingw64/bin/g++ --version)",
+      "Bash(PATH=/c/msys64/mingw64/bin:/c/msys64/usr/bin:/usr/bin /c/msys64/mingw64/bin/g++ -O1 -std=c++17 -Iinclude -c examples/main.cpp)",
+      "Bash(export PATH=/c/msys64/mingw64/bin:/c/msys64/usr/bin:/usr/bin)",
+      "Bash(/c/msys64/mingw64/bin/g++ -g -std=c++17 -Iinclude -fsanitize=address -o dendrite3d_dbg examples/main.cpp)",
+      "Bash(echo \"Syntax check exit: $?\")",
+      "Bash(echo \"Checkpoint header exit: $?\")",
+      "Bash(/c/msys64/mingw64/bin/g++ -O1 -std=c++17 -Iinclude -x c++-header -fsyntax-only include/layer.hpp)",
+      "Bash(echo \"Layer.hpp header exit: $?\")",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" /c/msys64/mingw64/bin/g++ -O1 -std=c++17 -Iinclude tests/test_checkpoint.cpp -o tests/bin/test_checkpoint.exe)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" tests/bin/test_checkpoint.exe)",
+      "Bash(rm -f ckpt_test_*.dnrt)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" tests/bin/tensor.exe)",
+      "Bash(tests/bin/morality.exe)",
+      "Bash(tests/bin/context.exe)",
+      "Skill(onnx-integrate)",
+      "Skill(onnx-integrate:*)",
+      "Bash(.venv/Scripts/python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --quiet)",
+      "Bash(.venv/Scripts/python.exe -m pip show torch torchvision)",
+      "Bash(.venv/Scripts/python.exe tools/export_encoders.py --out-dir models/)",
+      "Bash(.venv/Scripts/python.exe -m pip install onnxscript --quiet)",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe tools/export_encoders.py --out-dir models/)",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe tools/export_encoders.py --audio --out-dir models/)",
+      "Bash(PATH=\"/c/msys64/usr/bin\" pacman -Ss onnxruntime)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" pacman -Ss ort)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" pacman -Ss onnxruntime)",
+      "Bash(find c:/Users/kiera/Projects/DendriteNet/.venv -name *.dll)",
+      "Bash(curl -L \"https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-win-x64-1.20.1.zip\" -o /tmp/ort.zip)",
+      "Bash(unzip -q /tmp/ort.zip -d /tmp/ort_extract)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" TMP=\"/tmp\" g++ -O3 -std=c++17 -Iinclude -DDENDRITE_ONNX -ffast-math -funroll-loops -mavx2 -fopenmp -o dendrite3d_onnx examples/main.cpp -Iunnxruntime/include -Lonnxruntime/lib -lonnxruntime)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" TMP=\"/tmp\" g++ -O3 -std=c++17 -Iinclude -DDENDRITE_ONNX -ffast-math -funroll-loops -mavx2 -fopenmp -o dendrite3d_onnx examples/main.cpp -Ionnxruntime/include -Lonnxruntime/lib -lonnxruntime)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin\" echo 'void*\\(_stdcall* fp\\)\\(void\\); int main\\(\\){}')",
+      "Bash(/c/msys64/mingw64/bin/g++ -std=c++17 -x c++ -E -)",
+      "Bash(/c/msys64/mingw64/bin/g++ -std=c++17 -x c++ - -o /tmp/t.exe)",
+      "Bash(/c/msys64/mingw64/bin/g++ -std=c++17 -Iinclude -Ionnxruntime/include -DDENDRITE_ONNX -E include/onnx_encoder.hpp)",
+      "Bash(/c/msys64/mingw64/bin/g++ -std=c++17 -Iinclude -Ionnxruntime/include -DDENDRITE_ONNX -x c++ -c include/onnx_encoder.hpp -o /tmp/ort_test.o)",
+      "Bash(/c/msys64/mingw64/bin/g++ -std=c++17 -Iinclude -Ionnxruntime/include -DDENDRITE_ONNX -ffast-math -funroll-loops -mavx2 -fopenmp -c examples/main.cpp -o /tmp/main.o)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" /c/msys64/mingw64/bin/g++ -O3 -std=c++17 -Iinclude -DDENDRITE_ONNX -ffast-math -funroll-loops -mavx2 -fopenmp -c examples/main.cpp -Ionnxruntime/include -o /tmp/test.o)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" g++ -print-sysroot)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" g++ -dumpmachine)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" g++ -print-search-dirs)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" g++ -std=c++17 -DDENDRITE_ONNX -Ionnxruntime/include -E /tmp/test_ort.cpp)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" g++ -std=c++17 -x c++ - << 'EOF':*)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" TMP=\"/tmp\" g++ -O3 -std=c++17 -Iinclude -DDENDRITE_ONNX -D_stdcall=__stdcall -ffast-math -funroll-loops -mavx2 -fopenmp -o dendrite3d_onnx examples/main.cpp -Ionnxruntime/include -Lonnxruntime/lib -lonnxruntime)",
+      "Bash(DENDRITE_IMAGE_MODEL=models/mobilenet_v2_features.onnx DENDRITE_AUDIO_MODEL=models/audio_features.onnx PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" ./dendrite3d_onnx.exe)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" TMP=\"/tmp\" g++ -O3 -std=c++17 -Iinclude -ffast-math -funroll-loops -mavx2 -fopenmp -o dendrite3d examples/main.cpp)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin\" TEMP=\"/tmp\" ./dendrite3d.exe)",
+      "Bash(echo \"BUILD:$?\")",
+      "Bash(ls /usr/bin/*g++* /usr/bin/*gcc*)",
+      "Bash(apt --version)",
+      "Bash(pacman --version)",
+      "Bash(ls /c/msys64/mingw64/bin/g++*)",
+      "Bash(TEMP=\"/tmp\" TMP=\"/tmp\" /c/msys64/mingw64/bin/g++ -O3 -std=c++17 -Iinclude -ffast-math -funroll-loops -o dendrite3d examples/main.cpp)",
+      "Bash(TEMP=\"/tmp\" TMP=\"/tmp\" /c/msys64/mingw64/bin/g++ -O3 -std=c++17 -Iinclude -ffast-math -funroll-loops -o /tmp/dendrite3d_test examples/main.cpp)",
+      "Bash(TEMP=/tmp TMP=/tmp /c/msys64/mingw64/bin/g++ -O3 -std=c++17 -Iinclude -ffast-math -funroll-loops -o /tmp/dendrite3d_test examples/main.cpp)",
+      "Bash(TEMP=\"/tmp\" TMP=\"/tmp\" /c/msys64/mingw64/bin/g++ -O3 -std=c++17 -Iinclude -ffast-math -funroll-loops -o /tmp/d3d examples/main.cpp)",
+      "Bash(echo \"status=$?\")",
+      "Bash(TEMP=/tmp TMP=/tmp /c/msys64/mingw64/bin/g++ -std=c++17 -Iinclude -o /tmp/d3d examples/main.cpp)",
+      "Bash(TEMP=/tmp TMP=/tmp /c/msys64/mingw64/bin/g++ -std=c++17 -Iinclude -c examples/main.cpp -o /tmp/main.o)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:$PATH\" bash tests/build_and_run.sh)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin:$PATH\" bash tests/build_and_run.sh)",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin:$PATH\" TEMP=\"/tmp\" TMP=\"/tmp\" g++ -O3 -std=c++17 -Iinclude -ffast-math -funroll-loops -mavx2 -fopenmp -o dendrite3d examples/main.cpp)",
+      "Bash(echo \"BUILD_EXIT=$?\")",
+      "Bash(PATH=\"/c/msys64/mingw64/bin:/c/msys64/usr/bin:$PATH\" time ./dendrite3d.exe)",
+      "Read(//c/Users/kiera/.claude/plans/**)",
+      "Bash(grep -l \"Phase A\\\\|Phase B\\\\|Phase C\\\\|checkpoint\\\\|ONNX\\\\|train_minibatch\" /c/Users/kiera/.claude/plans/*.md)",
+      "Bash(grep -l \"DendriteNet\\\\|Phase A.*checkpoint\\\\|Phase B.*ONNX\\\\|Phase C.*GPU\\\\|batched GEMM\" /c/Users/kiera/.claude/plans/*.md)",
+      "Bash(grep -l \"model_config\\\\|dataset.hpp\" \"c:\\\\Users\\\\kiera\\\\Projects\\\\DendriteNet\\\\include\"/*.hpp)",
+      "Bash(xargs wc:*)",
+      "Bash(grep -E \"\\\\.md$\")",
+      "Bash(mkdir -p c:/Users/kiera/Projects/DendriteNet-Core)",
+      "Bash(cp -r c:/Users/kiera/Projects/DendriteNet/include c:/Users/kiera/Projects/DendriteNet-Core/)",
+      "Bash(cp -r c:/Users/kiera/Projects/DendriteNet/config c:/Users/kiera/Projects/DendriteNet-Core/)",
+      "Bash(cp -r c:/Users/kiera/Projects/DendriteNet/tools c:/Users/kiera/Projects/DendriteNet-Core/)",
+      "Bash(cp -r c:/Users/kiera/Projects/DendriteNet/tests c:/Users/kiera/Projects/DendriteNet-Core/)",
+      "Bash(cp -r c:/Users/kiera/Projects/DendriteNet/.claude c:/Users/kiera/Projects/DendriteNet-Core/)",
+      "Bash(cp c:/Users/kiera/Projects/DendriteNet/.mcp.json c:/Users/kiera/Projects/DendriteNet-Core/)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh",
+            "timeout": 10,
+            "once": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validate-bash.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/build-check.sh",
+            "timeout": 90
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/precompact.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

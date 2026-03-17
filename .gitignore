@@ -1,0 +1,52 @@
+# Build artifacts
+dendrite3d
+dendrite3d_dbg
+dendrite3d_min
+dendrite3d.exe
+dendrite3d_dbg.exe
+dendrite3d_min.exe
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Test binaries
+tests/bin/
+
+# Profiling output
+gmon.out
+callgrind.out.*
+perf.data
+perf.data.old
+*.prof
+
+# ONNX model files (large; store externally)
+*.onnx
+*.pb
+models/
+
+# ONNX Runtime prebuilt package
+onnxruntime/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local Claude Code settings (personal, not shared)
+.claude/settings.local.json
+.claude/agent-memory-local/
+
+# Compiled Python
+__pycache__/
+*.pyc
+
+# Temp files from hooks
+/tmp/dn_hook_*
+
+# Checkpoint test artifacts
+ckpt_test_*.dnrt

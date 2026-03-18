@@ -77,6 +77,9 @@ public:
     void zero() { std::fill(data.begin(), data.end(), 0.0f); }
     void fill(float v) { std::fill(data.begin(), data.end(), v); }
 
+    // Plain scalar loop — the compiler auto-vectorises to AVX2+FMA with
+    // -O3 -march=native -ffast-math, producing the same throughput as hand-written
+    // intrinsics without the GCC-O3 loop-vectoriser/intrinsic interaction crash.
     static float dot(const float* a, const float* b, size_t n) {
         float sum = 0.0f;
         for (size_t i = 0; i < n; i++) sum += a[i] * b[i];
@@ -145,6 +148,29 @@ public:
                 if (!std::isfinite(aval)) continue;
                 for (size_t n = 0; n < N; n++)
                     C.data[k * N + n] += aval * B.data[m * N + n];
+            }
+        }
+        return C;
+    }
+
+    // C[M,N] = A[M,K] @ B[N,K]^T  — avoids materialising B^T.
+    // Used in forward_batch: input_batch [B,in] @ weights [out,in]^T → [B,out].
+    // Three-loop structure (m→n→k) with innermost k being contiguous for both A and B rows;
+    // auto-vectorises the k loop to AVX2+FMA with -O3 -march=native -ffast-math.
+    static Tensor matmul_A_Bt(const Tensor& A, const Tensor& B) {
+        const size_t M = A.shape[0], K = A.shape[1], N = B.shape[0];
+        assert(B.shape.size() >= 2 && B.shape[1] == K);
+        Tensor C({M, N});
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(static) if(M * K * N >= 32768)
+#endif
+        for (size_t m = 0; m < M; m++) {
+            for (size_t n = 0; n < N; n++) {
+                float sum = 0.0f;
+                const float* a_row = &A.data[m * K];
+                const float* b_row = &B.data[n * K];
+                for (size_t k = 0; k < K; k++) sum += a_row[k] * b_row[k];
+                C.data[m * N + n] = sum;
             }
         }
         return C;

@@ -9,6 +9,24 @@
 
 namespace dendrite {
 
+// ---------------------------------------------------------------------------
+// Adam update (plain, no SI penalty).  Standalone free function (not a method)
+// for clean separation.  SI penalty must be applied as a scalar pre-pass before
+// calling this.  The plain scalar loop auto-vectorises to AVX2+FMA at
+// -O3 -march=native -ffast-math without the GCC intrinsic/vectoriser interaction
+// crash that arises from mixing hand-written _mm256 code with -O3 loop opts.
+// ---------------------------------------------------------------------------
+static inline void adam_update_plain(
+    float* w, const float* g, float* m, float* v,
+    size_t n, float b1, float b2, float bc1, float bc2, float lr, float eps)
+{
+    for (size_t i = 0; i < n; i++) {
+        m[i] = b1 * m[i] + (1.0f - b1) * g[i];
+        v[i] = b2 * v[i] + (1.0f - b2) * g[i] * g[i];
+        w[i] -= lr * (m[i] / bc1) / (std::sqrt(v[i] / bc2) + eps);
+    }
+}
+
 enum class Activation { NONE, RELU, SIGMOID, SOFTMAX, TANH };
 
 struct DenseLayer {
@@ -88,17 +106,14 @@ struct DenseLayer {
         for (size_t i = 0; i < grad_w.size(); i++) grad_w[i] += dw[i];
         for (size_t i = 0; i < grad_b.size(); i++) grad_b[i] += delta[i];
 
-        auto Wt = weights.T();
-        Tensor grad_input({in_dim});
-        for (size_t c = 0; c < in_dim; c++)
-            grad_input[c] = Tensor::dot(&Wt.data[c * out_dim], delta.data.data(), out_dim);
+        Tensor grad_input = Tensor::matvec_transposed(weights, delta);
         return grad_input;
     }
 
     // --------------------------------------------------------
     // Batched forward pass: input_batch [B × in_dim] → output [B × out_dim].
     // Caches input and pre-activation for backward_batch.
-    // Uses Tensor::matmul_ABt (input[B×in] @ W.T[in×out]) + bias broadcast.
+    // Uses Tensor::matmul_A_Bt (input[B×in] @ W[out×in]^T) — no transpose materialised.
     // When DENDRITE_OPENCL is set and B*out_dim >= DENDRITE_GPU_MIN_ELEMS,
     // the matmul dispatches to GPU automatically.
     // --------------------------------------------------------
@@ -108,8 +123,7 @@ struct DenseLayer {
         // W stored as [out_dim, in_dim] → W.T is [in_dim, out_dim]
         // matmul_AtB(W, input.T) gives [in_dim, B]... easier: matmul(input, W.T())
         // Use AVX2+OpenMP matmul; GPU dispatch handled inside matmul().
-        Tensor W_t = weights.T();   // [in_dim, out_dim] — cheap at 64×64
-        Tensor pre_act = Tensor::matmul(input_batch, W_t);  // [B, out_dim]
+        Tensor pre_act = Tensor::matmul_A_Bt(input_batch, weights);  // [B, out_dim] = input[B,in] @ W[out,in]^T
         // Add bias broadcast
         for (size_t b = 0; b < B; b++)
             for (size_t j = 0; j < out_dim; j++)
@@ -230,30 +244,30 @@ struct DenseLayer {
             if (mask_refresh_interval > 0 && sparsity_step % mask_refresh_interval == 0)
                 update_sparsity_mask();
         }
-        float bc1 = 1.0f - std::pow(beta1, adam_t);
-        float bc2 = 1.0f - std::pow(beta2, adam_t);
-        for (size_t i = 0; i < weights.size(); i++) {
-            if (si_enabled) {
-                // Accumulate path integral: -grad * displacement (before penalty modifies grad)
+        const float bc1 = 1.0f - std::pow(beta1, adam_t);
+        const float bc2 = 1.0f - std::pow(beta2, adam_t);
+
+        // SI penalty pre-pass (scalar): accumulate path integral and modify gradient
+        // before passing to the SIMD Adam kernel.
+        if (si_enabled) {
+            for (size_t i = 0; i < weights.size(); i++) {
                 running_sum_w[i] += -grad_w[i] * (weights[i] - prev_w[i]);
-                // SI penalty: pull toward anchor for important weights
                 grad_w[i] += si_lambda * omega_w[i] * (weights[i] - prev_w[i]);
                 if (!std::isfinite(grad_w[i])) grad_w[i] = 0.0f;
             }
-            m_w[i] = beta1 * m_w[i] + (1 - beta1) * grad_w[i];
-            v_w[i] = beta2 * v_w[i] + (1 - beta2) * grad_w[i] * grad_w[i];
-            weights[i] -= lr * (m_w[i] / bc1) / (std::sqrt(v_w[i] / bc2) + eps);
-        }
-        for (size_t i = 0; i < bias.size(); i++) {
-            if (si_enabled) {
+            for (size_t i = 0; i < bias.size(); i++) {
                 running_sum_b[i] += -grad_b[i] * (bias[i] - prev_b[i]);
                 grad_b[i] += si_lambda * omega_b[i] * (bias[i] - prev_b[i]);
                 if (!std::isfinite(grad_b[i])) grad_b[i] = 0.0f;
             }
-            m_b[i] = beta1 * m_b[i] + (1 - beta1) * grad_b[i];
-            v_b[i] = beta2 * v_b[i] + (1 - beta2) * grad_b[i] * grad_b[i];
-            bias[i] -= lr * (m_b[i] / bc1) / (std::sqrt(v_b[i] / bc2) + eps);
         }
+
+        adam_update_plain(weights.data.data(), grad_w.data.data(),
+                          m_w.data.data(), v_w.data.data(),
+                          weights.size(), beta1, beta2, bc1, bc2, lr, eps);
+        adam_update_plain(bias.data.data(), grad_b.data.data(),
+                          m_b.data.data(), v_b.data.data(),
+                          bias.size(), beta1, beta2, bc1, bc2, lr, eps);
         grad_w.zero(); grad_b.zero();
     }
 
@@ -621,6 +635,7 @@ struct DendriticLayer {
     Tensor last_modulation;   // tanh(max_segment_activation)
     Tensor last_output;       // final output after kWTA
     std::vector<size_t> last_active_mask;  // kWTA active neuron indices
+    std::vector<size_t> last_best_seg;     // winning segment index per neuron (cached for backward)
 
     // Adam state for feedforward weights
     Tensor m_w, v_w, m_b, v_b;
@@ -666,17 +681,26 @@ struct DendriticLayer {
         last_context = context;
         last_ff = Tensor::matvec(weights, input, bias);
 
+        // Compute all segment activations as a flat GEMV: each row of
+        // dendrite_weights [output_dim*num_segments, context_dim] dotted with context.
+        // Uses the AVX2 dot() primitive for 4-8x throughput over the scalar 3-deep loop.
+        const size_t total_segs = output_dim * num_segments;
+        const size_t cdim = std::min(context_dim, context.size());
+        std::vector<float> seg_acts(total_segs);
+        for (size_t row = 0; row < total_segs; row++)
+            seg_acts[row] = Tensor::dot(&dendrite_weights.data[row * context_dim],
+                                        context.data.data(), cdim);
+
         last_modulation = Tensor({output_dim});
+        last_best_seg.resize(output_dim);
         for (size_t n = 0; n < output_dim; n++) {
             float max_act = -1e30f;
+            size_t best = 0;
             for (size_t s = 0; s < num_segments; s++) {
-                float act = 0.0f;
-                size_t base = (n * num_segments + s) * context_dim;
-                size_t cdim = std::min(context_dim, context.size());
-                for (size_t c = 0; c < cdim; c++)
-                    act += dendrite_weights[base + c] * context[c];
-                max_act = std::max(max_act, act);
+                float a = seg_acts[n * num_segments + s];
+                if (a > max_act) { max_act = a; best = s; }
             }
+            last_best_seg[n] = best;
             last_modulation[n] = std::tanh(max_act);
             if (!std::isfinite(last_modulation[n])) last_modulation[n] = 0.0f;
         }
@@ -726,16 +750,7 @@ struct DendriticLayer {
             float grad_pre_tanh = grad_mod * dtanh;
             if (!std::isfinite(grad_pre_tanh)) continue;
 
-            float max_act = -1e30f;
-            size_t best_seg = 0;
-            for (size_t s = 0; s < num_segments; s++) {
-                float act = 0.0f;
-                size_t base = (n * num_segments + s) * context_dim;
-                size_t cdim = std::min(context_dim, last_context.size());
-                for (size_t c = 0; c < cdim; c++)
-                    act += dendrite_weights[base + c] * last_context[c];
-                if (act > max_act) { max_act = act; best_seg = s; }
-            }
+            size_t best_seg = (n < last_best_seg.size()) ? last_best_seg[n] : 0;
             size_t base = (n * num_segments + best_seg) * context_dim;
             size_t cdim = std::min(context_dim, last_context.size());
             for (size_t c = 0; c < cdim; c++) {
@@ -756,41 +771,43 @@ struct DendriticLayer {
 
     void apply_adam(float lr, float beta1 = 0.9f, float beta2 = 0.999f, float eps = 1e-8f) {
         adam_t++;
-        float bc1 = 1.0f - std::pow(beta1, adam_t);
-        float bc2 = 1.0f - std::pow(beta2, adam_t);
-        for (size_t i = 0; i < weights.size(); i++) {
-            if (si_enabled) {
+        const float bc1 = 1.0f - std::pow(beta1, adam_t);
+        const float bc2 = 1.0f - std::pow(beta2, adam_t);
+
+        // SI penalty pre-pass (scalar): modify gradients before SIMD Adam kernel.
+        if (si_enabled) {
+            for (size_t i = 0; i < weights.size(); i++) {
                 running_sum_w[i] += -grad_w[i] * (weights[i] - prev_w_si[i]);
                 grad_w[i] += si_lambda * omega_w[i] * (weights[i] - prev_w_si[i]);
                 if (!std::isfinite(grad_w[i])) grad_w[i] = 0.0f;
             }
-            m_w[i] = beta1 * m_w[i] + (1 - beta1) * grad_w[i];
-            v_w[i] = beta2 * v_w[i] + (1 - beta2) * grad_w[i] * grad_w[i];
-            weights[i] -= lr * (m_w[i] / bc1) / (std::sqrt(v_w[i] / bc2) + eps);
-            if (!std::isfinite(weights[i])) weights[i] = 0.0f;
-        }
-        for (size_t i = 0; i < bias.size(); i++) {
-            if (si_enabled) {
+            for (size_t i = 0; i < bias.size(); i++) {
                 running_sum_b[i] += -grad_b[i] * (bias[i] - prev_b_si[i]);
                 grad_b[i] += si_lambda * omega_b[i] * (bias[i] - prev_b_si[i]);
                 if (!std::isfinite(grad_b[i])) grad_b[i] = 0.0f;
             }
-            m_b[i] = beta1 * m_b[i] + (1 - beta1) * grad_b[i];
-            v_b[i] = beta2 * v_b[i] + (1 - beta2) * grad_b[i] * grad_b[i];
-            bias[i] -= lr * (m_b[i] / bc1) / (std::sqrt(v_b[i] / bc2) + eps);
-            if (!std::isfinite(bias[i])) bias[i] = 0.0f;
-        }
-        for (size_t i = 0; i < dendrite_weights.size(); i++) {
-            if (si_enabled) {
+            for (size_t i = 0; i < dendrite_weights.size(); i++) {
                 running_sum_dw[i] += -grad_dw[i] * (dendrite_weights[i] - prev_dw_si[i]);
                 grad_dw[i] += si_lambda * omega_dw[i] * (dendrite_weights[i] - prev_dw_si[i]);
                 if (!std::isfinite(grad_dw[i])) grad_dw[i] = 0.0f;
             }
-            m_dw[i] = beta1 * m_dw[i] + (1 - beta1) * grad_dw[i];
-            v_dw[i] = beta2 * v_dw[i] + (1 - beta2) * grad_dw[i] * grad_dw[i];
-            dendrite_weights[i] -= lr * (m_dw[i] / bc1) / (std::sqrt(v_dw[i] / bc2) + eps);
-            if (!std::isfinite(dendrite_weights[i])) dendrite_weights[i] = 0.0f;
         }
+
+        adam_update_plain(weights.data.data(), grad_w.data.data(),
+                          m_w.data.data(), v_w.data.data(),
+                          weights.size(), beta1, beta2, bc1, bc2, lr, eps);
+        adam_update_plain(bias.data.data(), grad_b.data.data(),
+                          m_b.data.data(), v_b.data.data(),
+                          bias.size(), beta1, beta2, bc1, bc2, lr, eps);
+        adam_update_plain(dendrite_weights.data.data(), grad_dw.data.data(),
+                          m_dw.data.data(), v_dw.data.data(),
+                          dendrite_weights.size(), beta1, beta2, bc1, bc2, lr, eps);
+
+        // Post-update NaN guard (per nn-conventions.md)
+        for (auto& v : weights.data)         if (!std::isfinite(v)) v = 0.0f;
+        for (auto& v : bias.data)             if (!std::isfinite(v)) v = 0.0f;
+        for (auto& v : dendrite_weights.data) if (!std::isfinite(v)) v = 0.0f;
+
         grad_w.zero(); grad_b.zero(); grad_dw.zero();
     }
 

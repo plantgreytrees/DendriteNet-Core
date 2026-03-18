@@ -266,14 +266,27 @@ public:
     // --------------------------------------------------------
     void update_load_balancing(const Tensor& heat, int k) {
         if (!load_balancing_enabled) return;
-        // Rank branches by heat; mark the top-k as selected
-        std::vector<std::pair<float, size_t>> ranked;
-        for (size_t b = 0; b < heat.size() && b < running_usage.size(); b++)
-            ranked.push_back({heat[b], b});
-        std::sort(ranked.rbegin(), ranked.rend());
+        // Rank branches by heat; mark the top-k as selected.
+        // For n<=8 (typical: 4 branches) use manual selection to avoid std::sort overhead.
+        const size_t n = std::min(heat.size(), running_usage.size());
         std::vector<bool> in_topk(running_usage.size(), false);
-        for (int i = 0; i < k && i < (int)ranked.size(); i++)
-            in_topk[ranked[i].second] = true;
+        if (n <= 8) {
+            std::vector<bool> used(n, false);
+            for (int pick = 0; pick < k && pick < (int)n; pick++) {
+                size_t best = 0; float best_h = -1e30f;
+                for (size_t b = 0; b < n; b++)
+                    if (!used[b] && heat[b] > best_h) { best_h = heat[b]; best = b; }
+                used[best] = true;
+                in_topk[best] = true;
+            }
+        } else {
+            std::vector<std::pair<float, size_t>> ranked;
+            ranked.reserve(n);
+            for (size_t b = 0; b < n; b++) ranked.push_back({heat[b], b});
+            std::sort(ranked.rbegin(), ranked.rend());
+            for (int i = 0; i < k && i < (int)ranked.size(); i++)
+                in_topk[ranked[i].second] = true;
+        }
 
         for (size_t b = 0; b < heat.size() && b < running_usage.size(); b++) {
             float activated = in_topk[b] ? 1.0f : 0.0f;
@@ -393,22 +406,45 @@ public:
         }
 
         case FusionStrategy::TOP_K_BLEND: {
-            // Only top-K hottest branches contribute
+            // Only top-K hottest branches contribute.
+            // For small active sets (<=8, typical), use manual selection.
             std::vector<std::pair<float, int>> scored;
             for (int b : active_branches)
                 scored.push_back({heat[b], b});
-            std::sort(scored.rbegin(), scored.rend());
 
-            float total_w = 0;
-            int k = std::min(top_k, (int)scored.size());
-            for (int i = 0; i < k; i++) total_w += scored[i].first;
-            if (total_w < 1e-7f) total_w = 1.0f;
-
-            for (int i = 0; i < k; i++) {
-                int b = scored[i].second;
-                float w = scored[i].first / total_w;
-                for (size_t j = 0; j < output_dim; j++)
-                    fused[j] += branch_outputs[b][j] * w;
+            const int ns = (int)scored.size();
+            const int k = std::min(top_k, ns);
+            // Partial selection: find top-k by k passes of argmax
+            if (ns <= 8) {
+                std::vector<bool> used(ns, false);
+                float total_w = 0;
+                std::vector<int> topk_indices;
+                for (int pick = 0; pick < k; pick++) {
+                    int best = 0; float best_h = -1e30f;
+                    for (int i = 0; i < ns; i++)
+                        if (!used[i] && scored[i].first > best_h) { best_h = scored[i].first; best = i; }
+                    used[best] = true;
+                    topk_indices.push_back(best);
+                    total_w += scored[best].first;
+                }
+                if (total_w < 1e-7f) total_w = 1.0f;
+                for (int idx : topk_indices) {
+                    int b = scored[idx].second;
+                    float w = scored[idx].first / total_w;
+                    for (size_t j = 0; j < output_dim; j++)
+                        fused[j] += branch_outputs[b][j] * w;
+                }
+            } else {
+                std::sort(scored.rbegin(), scored.rend());
+                float total_w = 0;
+                for (int i = 0; i < k; i++) total_w += scored[i].first;
+                if (total_w < 1e-7f) total_w = 1.0f;
+                for (int i = 0; i < k; i++) {
+                    int b = scored[i].second;
+                    float w = scored[i].first / total_w;
+                    for (size_t j = 0; j < output_dim; j++)
+                        fused[j] += branch_outputs[b][j] * w;
+                }
             }
             break;
         }

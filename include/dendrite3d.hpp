@@ -1654,17 +1654,24 @@ public:
             // Batched forward through all specialist layers
             Tensor out_b = branches[b]->specialist.forward_batch(in_b);
 
-            // Cross-entropy loss + gradient (clipped to [-1, 1] per nn-conventions)
+            // Cross-entropy loss + gradient — in-place over out_b to avoid per-sample allocs.
+            // Gradient clipped to [-1, 1] per nn-conventions.md.
             Tensor grad_b({nb, od});
             for (size_t k = 0; k < nb; k++) {
-                Tensor logits({od});
-                for (size_t d = 0; d < od; d++) logits[d] = out_b.data[k * od + d];
-                const Tensor probs = logits.softmax();
+                float* logit_row = &out_b.data[k * od];
+                float* grad_row  = &grad_b.data[k * od];
+                const float* tgt_row = &tgt_b.data[k * od];
+                // In-place softmax on logit_row
+                float mx = logit_row[0];
+                for (size_t d = 1; d < od; d++) if (logit_row[d] > mx) mx = logit_row[d];
+                float sum_e = 0.0f;
+                for (size_t d = 0; d < od; d++) { logit_row[d] = std::exp(logit_row[d] - mx); sum_e += logit_row[d]; }
+                const float inv = sum_e > 1e-7f ? 1.0f / sum_e : 1.0f;
                 for (size_t d = 0; d < od; d++) {
-                    if (tgt_b.data[k * od + d] > 0.5f)
-                        total_loss -= std::log(std::max(probs[d], 1e-7f));
-                    grad_b.data[k * od + d] =
-                        std::clamp(probs[d] - tgt_b.data[k * od + d], -1.0f, 1.0f);
+                    const float p = logit_row[d] * inv;
+                    if (tgt_row[d] > 0.5f)
+                        total_loss -= std::log(std::max(p, 1e-7f));
+                    grad_row[d] = std::clamp(p - tgt_row[d], -1.0f, 1.0f);
                 }
             }
 
